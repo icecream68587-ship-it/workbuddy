@@ -1,0 +1,20 @@
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+`$RECYCLE.BIN/
+*.lnk
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+
+# 脚本临时产物
+_*.txt
+_t.ps1
+*.log
+
+# 归档产物（源码为准，zip 不入库）
+*.zip
+
