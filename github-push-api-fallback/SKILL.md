@@ -7,6 +7,15 @@ agent_created: true
 
 # GitHub 上传：当 git 协议走不通时
 
+## 平台：跨平台
+
+**Windows / macOS / Linux 都能用。** 只依赖 Python 3 标准库 + PATH 里的 `git`，
+`scripts/push_via_api.py` 里没有任何平台相关路径或系统调用。
+本 skill 不是"Windows 专属"，它解决的是"git 传输层被拦截"这个与系统无关的问题。
+
+> 文末「Windows 环境专属坑」一节是在 Windows 上踩到的**环境问题**，
+> 其他系统可以忽略；方案主体照样适用。
+
 ## 结论先行
 
 受限环境里 **`git push` 大概率失败，但 `curl` / `python` 访问 `api.github.com` 通常正常**。
@@ -41,12 +50,21 @@ PAT 地址：https://github.com/settings/tokens/new
 
 ## 执行流程
 
-`scripts/push_via_api.py` 已封装全部步骤，改顶部 4 个常量即可跑：
+`scripts/push_via_api.py` 已封装全部步骤，命令行驱动，无需改代码：
 
 ```bash
-export PATH="/usr/bin:/bin:/c/Users/<ME>/.workbuddy/binaries/PortableGit/versions/*/bin:/c/Windows/System32:/c/Windows:$PATH"
-"<managed python>" push_via_api.py
+# 首次上传（远端是空仓库）
+python push_via_api.py owner/repo --token-file .gh_pat -m "Initial commit"
+
+# 后续更新：只上传变更文件，快进提交
+python push_via_api.py owner/repo --token-file .gh_pat -m "Fix typo"
+
+# 令牌走环境变量 / 指定目录和分支 / 不同步本地 ref
+GH_TOKEN=ghp_xxx python push_via_api.py owner/repo --dir ../myproj --branch dev --no-mirror
 ```
+
+脚本会自动判断：远端为空则先塞占位提交；远端已有提交则取 `base_tree` 做增量；
+没有变更直接退出。成功后再把本地 ref 复现成同一个 sha。
 
 内部步骤（手工实现时照此顺序）：
 
@@ -76,7 +94,8 @@ local_tree = git("rev-parse","HEAD^{tree}")
 assert tree["sha"] == local_tree        # 不一致 = 第 2 步取错了内容
 ```
 
-### 4. 建 commit，`parents: []`，并显式带 author/committer 日期
+### 4. 建 commit，`parents: [<远端 head>]`，并显式带 author/committer 日期
+首次上传时 `parents: []`；已有提交则带远端 head，形成快进历史。
 日期写死成 ISO8601（如 `2026-09-29T17:00:44Z`），第 6 步要靠它复现 sha。
 
 ### 5. 更新 ref，**必须带 force**
@@ -93,7 +112,8 @@ GitHub 存的 commit message **不带结尾换行**，而 `git commit-tree -m` �
 所以两边 sha 会不同。用 `hash-object` 手工拼字节精确复现：
 
 ```python
-body = f"tree {tree}\nauthor {A} {epoch} +0000\ncommitter {A} {epoch} +0000\n\n{msg}".encode()
+body = (f"tree {tree}\nparent {parent}\n"          # 首次上传没有 parent 行
+        f"author {A} {epoch} +0000\ncommitter {A} {epoch} +0000\n\n{msg}").encode()
 # 注意：msg 末尾不要换行
 sha = git("hash-object","-t","commit","-w","--stdin", input=body)
 ```
@@ -101,15 +121,23 @@ sha = git("hash-object","-t","commit","-w","--stdin", input=body)
 再 `git update-ref refs/heads/main <sha>`。这样本地 `git status` 干净、
 日后普通 `git push` 不会冲突，**不需要 force push**。
 
-## 坑位清单
+## 坑位清单（通用）
 
 - 某些仓库里 `git update-ref refs/remotes/origin/main` 返回 0 但引用没落盘；
   直接写文件 `.git/refs/remotes/origin/main`（内容为一个 sha + 换行）才生效。
   还要补 `git config branch.main.remote origin` + `branch.main.merge refs/heads/main`。
-- `sleep` 在这个 shell 里不存在，用 `ping -n N 127.0.0.1 >/dev/null` 代替。
+- 增量更新时若**删除**了文件，tree 条目要传 `{"path": ..., "sha": null}`，
+  否则远端不会删掉它。
+- GitHub 的 JSON 是 `"key": value`（冒号后有空格），grep 别写成 `"key":"`。
+
+## Windows 环境专属坑（其他系统可跳过）
+
+- `sleep` 在某些精简 shell 里不存在，用 `ping -n N 127.0.0.1 >/dev/null` 代替。
 - Bash 工具可能 PATH 残缺（缺 `dirname`/`head`），前置 export PATH 修好。
 - PowerShell 工具可能不回显 stdout；需要输出时先写到临时文件再 Read。
-- winget 装的 gh 可能是断链（目录只剩 `.db`）。要用 gh 就直接下官方 zip 解压，别信 `gh --version` 无输出。
+- winget 装的 gh 可能是断链（目录只剩 `.db`）。要用 gh 就直接下官方 zip 解压，
+  别信 `gh --version` 无输出。
+- `core.autocrlf` 默认 true，本机换行符问题比 Linux/macOS 更容易踩。
 
 ## 收尾（安全）
 
